@@ -1,0 +1,66 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>表情符号马赛克图片处理</title>
+    
+    <script src="https://cdn.jsdelivr.net/npm/p5@1.6.0/lib/p5.min.js"></script>
+    
+    <style>
+        body {
+            /* 居中所有内容 */
+            margin: 0;
+            padding: 20px;
+            display: flex;
+            flex-direction: column; /* 垂直堆叠 */
+            align-items: center; /* 水平居中 */
+            min-height: 100vh;      
+            background-color: #f0f0f0; 
+            font-family: Arial, sans-serif;
+        }
+        
+        /* 确保 p5.js 画布显示为块级元素，避免底部空白 */
+        canvas {
+            display: block; 
+            margin-top: 20px; 
+            border: 1px solid #ccc;
+            box-shadow: 0 4px 8px rgba(0, 0, 0, 0.1);
+        }
+        
+        /* 统一 p5.js 创建的 DOM 元素（按钮和文件输入框）的样式 */
+        .p5-content button, 
+        .p5-content input[type="file"] {
+            font-size: 16px;
+            padding: 8px 15px;
+            margin: 10px;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+            color: white;
+            transition: background-color 0.3s;
+        }
+
+        .p5-content button {
+            background-color: #4CAF50;
+        }
+        .p5-content button:hover {
+            background-color: #45a049;
+        }
+        
+        /* 容器用于定位 p5.js DOM 元素 */
+        .p5-content {
+            position: relative;
+            width: 100%;
+            max-width: 1000px;
+            text-align: center;
+        }
+    </style>
+</head>
+<body>
+    <div class="p5-content">
+    </div>
+    
+    <script src="sketch.js"></script>
+</body>
+</html>
