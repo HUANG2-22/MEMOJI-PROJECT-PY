@@ -1,7 +1,8 @@
-// sketch.js
+// sketch.js (FINAL)
 // Emoji Mosaic (browser-only) using emojis_16.npy
-// Output fixed: 900x900
-// Pipeline: load npy -> compute mean colors -> build spritesheet -> match pixels -> draw mosaic
+// - Output fixed: 900x900
+// - Supports NPY dtype: uint8 (u1) OR float32 (<f4)
+// - Pipeline: load npy -> convert to Uint8 RGBA -> compute mean colors -> build spritesheet -> match pixels -> draw mosaic
 
 // =====================
 // Config
@@ -9,14 +10,21 @@
 const TARGET_SIZE = 900;
 const UI_HEIGHT = 200;
 
-const MOSAIC_DIM = 75;      // 75x75 cells -> each cell = 12px (900/75)
-const EMOJI_SIZE = 16;      // emojis_16.npy uses 16x16
-const SHEET_COLS = 64;      // spritesheet columns
+// mosaic resolution: larger => more detail but slower
+const MOSAIC_DIM = 75;      // 75x75 -> cell size = 12px
 
+// emojis_16.npy is usually 16x16 RGBA
+const EMOJI_SIZE = 16;
+
+// spritesheet layout
+const SHEET_COLS = 64;
+
+// mean-color computation
 const IGNORE_TRANSPARENT = true;
-const ALPHA_CUTOFF = 10;    // ignore alpha <= 10 when computing mean
+const ALPHA_CUTOFF = 10;
 
-const NPY_PATH = "emojis_16.npy"; // put emojis_16.npy in same folder as index.html (or change path)
+// IMPORTANT: if emojis_16.npy is in /assets, change to "assets/emojis_16.npy"
+const NPY_PATH = "emojis_16.npy";
 
 // =====================
 // Globals
@@ -26,10 +34,11 @@ let processedCanvas = null;
 
 let fileInputEl, saveButtonEl;
 
-let npyBytesObj = null;     // from loadBytes
-let emojiData = null;       // Uint8Array for all emojis
+let npyBytesObj = null;
+
 let emojiCount = 0;
-let emojiMeans = null;      // Float32Array length = emojiCount * 3
+let emojiU8 = null;         // Uint8Array RGBA, length = N*16*16*4
+let emojiMeans = null;      // Float32Array length = N*3 (mean RGB)
 let emojiSheetImg = null;   // p5.Image spritesheet
 
 let isReady = false;
@@ -39,12 +48,11 @@ let statusMsg = "Loading emoji library...";
 // Preload
 // =====================
 function preload() {
-  // loadBytes is supported by p5.js and works on GitHub Pages (same-origin)
   npyBytesObj = loadBytes(
     NPY_PATH,
     () => {},
     () => {
-      statusMsg = "Failed to load emojis_16.npy. Check path and GitHub Pages build.";
+      statusMsg = `Failed to load ${NPY_PATH}. Check path / GitHub Pages deployment.`;
     }
   );
 }
@@ -59,6 +67,7 @@ function setup() {
   fileInputEl = createInput("", "file");
   fileInputEl.attribute("accept", "image/*");
   fileInputEl.elt.onchange = handleFileChange;
+  fileInputEl.elt.disabled = true; // enable after emoji library is ready
 
   saveButtonEl = createButton("点击保存处理后的图片");
   saveButtonEl.mousePressed(saveImage);
@@ -66,7 +75,6 @@ function setup() {
   textAlign(CENTER, CENTER);
   layoutUI();
 
-  // Parse npy + build mean colors + spritesheet
   tryInitEmojiLibrary();
 }
 
@@ -110,7 +118,8 @@ function handleFileChange(event) {
 }
 
 // =====================
-// NPY Parser (minimal, supports v1/v2 headers, little-endian uint8)
+// NPY Parser (minimal)
+// Supports v1/v2/v3 headers; dtypes: u1, f4
 // =====================
 function parseNPY(arrayBuffer) {
   const u8 = new Uint8Array(arrayBuffer);
@@ -139,18 +148,18 @@ function parseNPY(arrayBuffer) {
   const headerBytes = u8.slice(offset, offset + headerLen);
   const headerText = new TextDecoder("ascii").decode(headerBytes);
 
-  // Parse descr
+  // descr
   const descrMatch = headerText.match(/'descr'\s*:\s*'([^']+)'/);
   if (!descrMatch) throw new Error("NPY header missing descr.");
-  const descr = descrMatch[1]; // e.g. "<u1" or "|u1"
+  const descr = descrMatch[1]; // examples: "<u1", "|u1", "<f4"
 
-  // Parse fortran_order
+  // fortran_order
   const fortMatch = headerText.match(/'fortran_order'\s*:\s*(True|False)/);
   if (!fortMatch) throw new Error("NPY header missing fortran_order.");
   const fortranOrder = fortMatch[1] === "True";
-  if (fortranOrder) throw new Error("Fortran-order arrays not supported in this parser.");
+  if (fortranOrder) throw new Error("Fortran-order arrays not supported.");
 
-  // Parse shape
+  // shape
   const shapeMatch = headerText.match(/'shape'\s*:\s*\(([^)]*)\)/);
   if (!shapeMatch) throw new Error("NPY header missing shape.");
   const shapeStr = shapeMatch[1].trim();
@@ -160,16 +169,13 @@ function parseNPY(arrayBuffer) {
     .filter((s) => s.length > 0)
     .map((s) => parseInt(s, 10));
 
-  // Validate dtype
-  // We only support uint8 for emojis_16.npy
-  if (!(descr.endsWith("u1") || descr.endsWith("U1"))) {
-    throw new Error(`Unsupported dtype: ${descr}. Expected uint8 (u1).`);
-  }
-
   const dataOffset = offset + headerLen;
-  const data = u8.slice(dataOffset);
 
-  return { major, minor, descr, shape, data };
+  return { descr, shape, dataOffset };
+}
+
+function product(arr) {
+  return arr.reduce((a, b) => a * b, 1);
 }
 
 function tryInitEmojiLibrary() {
@@ -179,38 +185,90 @@ function tryInitEmojiLibrary() {
       return;
     }
 
-    // loadBytes returns Uint8Array; slice correctly
+    // p5 loadBytes -> Uint8Array, get exact ArrayBuffer slice
     const bytes = npyBytesObj.bytes;
     const ab = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
 
     statusMsg = "Parsing emojis_16.npy...";
     const parsed = parseNPY(ab);
 
-    // Expect shape (N,16,16,4)
+    // Validate shape (N,16,16,4)
     const shape = parsed.shape;
     if (shape.length !== 4 || shape[1] !== EMOJI_SIZE || shape[2] !== EMOJI_SIZE || shape[3] !== 4) {
       throw new Error(`Unexpected shape: (${shape.join(",")}). Expected (N,16,16,4).`);
     }
 
     emojiCount = shape[0];
-    emojiData = parsed.data; // Uint8Array length = N*16*16*4
+    const totalElems = product(shape); // N*16*16*4
+
+    // Extract raw data buffer (copy to align)
+    const dataBuf = ab.slice(parsed.dataOffset);
+
+    // Convert to Uint8 RGBA regardless of input dtype
+    statusMsg = `Decoding dtype ${parsed.descr}...`;
+
+    if (parsed.descr.endsWith("u1") || parsed.descr.endsWith("U1")) {
+      // uint8
+      const u = new Uint8Array(dataBuf);
+      if (u.length < totalElems) {
+        throw new Error(`Data too short: got ${u.length}, expected ${totalElems}.`);
+      }
+      emojiU8 = u.slice(0, totalElems);
+    } else if (parsed.descr.endsWith("f4") || parsed.descr.endsWith("F4")) {
+      // float32
+      const f = new Float32Array(dataBuf);
+      if (f.length < totalElems) {
+        throw new Error(`Data too short: got ${f.length}, expected ${totalElems}.`);
+      }
+      emojiU8 = float32ToU8RGBA(f, totalElems);
+    } else {
+      throw new Error(`Unsupported dtype: ${parsed.descr}. Expected uint8 (u1) or float32 (f4).`);
+    }
 
     statusMsg = `Computing mean colors for ${emojiCount} emojis...`;
-    emojiMeans = computeEmojiMeans(emojiData, emojiCount);
+    emojiMeans = computeEmojiMeans(emojiU8, emojiCount);
 
     statusMsg = "Building emoji spritesheet...";
-    emojiSheetImg = buildEmojiSheetImage(emojiData, emojiCount);
+    emojiSheetImg = buildEmojiSheetImage(emojiU8, emojiCount);
 
     isReady = true;
     statusMsg = `Ready. Emoji count: ${emojiCount}. Upload an image.`;
+    fileInputEl.elt.disabled = false;
   } catch (e) {
     console.error(e);
     statusMsg = `Emoji init error: ${e.message}`;
     isReady = false;
+    fileInputEl.elt.disabled = true;
   }
 }
 
-function computeEmojiMeans(data, count) {
+// If float32 values are in [0,1], scale by 255; if already ~[0,255], keep.
+// Then clamp to [0,255] and round.
+function float32ToU8RGBA(f32, totalElems) {
+  // quick detect scale using a small sample
+  let maxV = 0;
+  const sampleN = Math.min(5000, totalElems);
+  for (let i = 0; i < sampleN; i++) {
+    const v = f32[i];
+    if (v > maxV) maxV = v;
+  }
+  const use01 = maxV <= 1.5; // likely 0..1 floats
+  const out = new Uint8Array(totalElems);
+
+  for (let i = 0; i < totalElems; i++) {
+    let v = f32[i];
+    if (use01) v = v * 255.0;
+
+    // clamp
+    if (v < 0) v = 0;
+    if (v > 255) v = 255;
+
+    out[i] = v + 0.5; // round
+  }
+  return out;
+}
+
+function computeEmojiMeans(dataU8, count) {
   // Float32Array: [r0,g0,b0, r1,g1,b1, ...]
   const means = new Float32Array(count * 3);
 
@@ -223,10 +281,10 @@ function computeEmojiMeans(data, count) {
 
     for (let p = 0; p < pixelsPerEmoji; p++) {
       const idx = base + p * 4;
-      const r = data[idx];
-      const g = data[idx + 1];
-      const b = data[idx + 2];
-      const a = data[idx + 3];
+      const r = dataU8[idx];
+      const g = dataU8[idx + 1];
+      const b = dataU8[idx + 2];
+      const a = dataU8[idx + 3];
 
       if (IGNORE_TRANSPARENT && a <= ALPHA_CUTOFF) continue;
 
@@ -251,7 +309,7 @@ function computeEmojiMeans(data, count) {
   return means;
 }
 
-function buildEmojiSheetImage(data, count) {
+function buildEmojiSheetImage(dataU8, count) {
   const rows = Math.ceil(count / SHEET_COLS);
   const sheetW = SHEET_COLS * EMOJI_SIZE;
   const sheetH = rows * EMOJI_SIZE;
@@ -279,10 +337,10 @@ function buildEmojiSheetImage(data, count) {
         const dy = dstY0 + y;
         const dstIdx = (dx + dy * sheetW) * 4;
 
-        sheet.pixels[dstIdx]     = data[srcIdx];
-        sheet.pixels[dstIdx + 1] = data[srcIdx + 1];
-        sheet.pixels[dstIdx + 2] = data[srcIdx + 2];
-        sheet.pixels[dstIdx + 3] = data[srcIdx + 3];
+        sheet.pixels[dstIdx]     = dataU8[srcIdx];
+        sheet.pixels[dstIdx + 1] = dataU8[srcIdx + 1];
+        sheet.pixels[dstIdx + 2] = dataU8[srcIdx + 2];
+        sheet.pixels[dstIdx + 3] = dataU8[srcIdx + 3];
       }
     }
   }
@@ -301,6 +359,7 @@ function drawToSquare900(srcImg) {
   const ow = srcImg.width;
   const oh = srcImg.height;
 
+  // scale to fill then center crop
   const scale = Math.max(TARGET_SIZE / ow, TARGET_SIZE / oh);
   const w = ow * scale;
   const h = oh * scale;
@@ -313,7 +372,6 @@ function drawToSquare900(srcImg) {
 }
 
 function nearestEmojiIndex(r, g, b) {
-  // linear search over means (fast enough for MOSAIC_DIM~60-100)
   let bestIdx = 0;
   let bestD = Infinity;
 
@@ -323,7 +381,6 @@ function nearestEmojiIndex(r, g, b) {
     const dg = g - emojiMeans[off + 1];
     const db = b - emojiMeans[off + 2];
     const d = dr * dr + dg * dg + db * db;
-
     if (d < bestD) {
       bestD = d;
       bestIdx = i;
@@ -351,7 +408,7 @@ function processImage() {
 
   statusMsg = "Processing image...";
 
-  // A) center-crop to 900x900
+  // A) crop to 900x900
   const base900 = drawToSquare900(uploadedImg);
 
   // B) downsample to MOSAIC_DIM x MOSAIC_DIM
