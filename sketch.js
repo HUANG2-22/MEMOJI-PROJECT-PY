@@ -1,4 +1,4 @@
-// sketch.js (FINAL)
+给我一个完整的给你一个 p5.js 版本的“九宫格 colormap emoji mosaic”结构代码,在以下代码的基础上进行修改：// sketch.js (FINAL)
 // Emoji Mosaic (browser-only) using emojis_16.npy
 // - Output fixed: 900x900
 // - Supports NPY dtype: uint8 (u1) OR float32 (<f4)
