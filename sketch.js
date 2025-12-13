@@ -12,7 +12,7 @@ const UI_HEIGHT = 200;
 
 // mosaic resolution: larger => more detail but slower
 //const MOSAIC_DIM = 75;      // 75x75 -> cell size = 12px
-const MOSAIC_DIM = 22; 
+const MOSAIC_DIM = 222; 
 
 // emojis_16.npy is usually 16x16 RGBA
 const EMOJI_SIZE = 16;
